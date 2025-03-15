@@ -2,10 +2,16 @@
 This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
 
 ---
-# Wireduck Extension
+# DuckDB Wireduck Extension
 ![Description](./docs/wireduck.jpg)
 
-This extension, Wireduck, allow you to ... <extension_goal>.
+This extension, Wireduck, allow you to read PCAP files using duckdb.
+It uses behind the scenes the tshark utility and allows flexible parsing 
+and analysis of network captures.
+
+## Prerequities
+tshark ( installed part of wireshark) is installed.
+
 
 ## Building
 ### Managing dependencies
@@ -84,3 +90,10 @@ After running these steps, you can install and load your extension using the reg
 INSTALL wireduck
 LOAD wireduck
 ```
+### Roadmap
+* push down time filter
+* push down limit ( use tshark -c)
+* integrate with duckdb file system ( e.g allow to pull pcaps from remote )
+* tshark -G via "select * from glossary()"
+* read_pcap with additional option for specific protocols
+
