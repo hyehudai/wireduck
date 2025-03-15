@@ -1,11 +1,11 @@
-# Wireduck
 
 This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
 
 ---
+# Wireduck Extension
+![Description](./docs/wireduck.jpg)
 
 This extension, Wireduck, allow you to ... <extension_goal>.
-
 
 ## Building
 ### Managing dependencies
