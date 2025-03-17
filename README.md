@@ -9,20 +9,40 @@ This extension, Wireduck, allow you to read PCAP files using duckdb.
 It uses behind the scenes the tshark utility and allows flexible parsing 
 and analysis of network captures.
 
-## Prerequities
+## Installation
+### Prerequities
 tshark ( installed part of wireshark) is installed.
+and validate its exists via
+```
+tshark --version
+```
+installation is simple through the DuckDB Community Extension repository, just type
+```
+INSTALL wireduck FROM community
+LOAD wireduck
+```
+## Examples
 
+### the `read_pcap` function
+explain how it works behind the scens with tshark and the stdin
+### the `glossary` function
+
+
+### File IO Limitations
+The `read_pcap` function is NOT integrated into DuckDB's file system abstraction.
+meaning you CANNOT read pcap files directly from e.g. HTTP or S3 sources. For example
+
+Multiple files as a list or via glob are not supported.
+
+fixing this is on the roadmap
 
 ## Building
-### Managing dependencies
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
-```shell
-git clone https://github.com/Microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
+### dependencies
+tshark ( installed part of wireshark) is installed.
+and validate its exists via
 ```
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
-
+tshark --version
+```
 ### Build steps
 Now to build the extension, run:
 ```sh
@@ -41,16 +61,7 @@ The main binaries that will be built are:
 ## Running the extension
 To run the extension code, simply start the shell with `./build/release/duckdb`.
 
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `wireduck()` that takes a string arguments and returns a string:
-```
-D select wireduck('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ Wireduck Jane 🐥 │
-└───────────────┘
-```
+Now we can use the features from the extension directly in DuckDB.
 
 ## Running the tests
 Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
@@ -90,10 +101,5 @@ After running these steps, you can install and load your extension using the reg
 INSTALL wireduck
 LOAD wireduck
 ```
-### Roadmap
-* push down time filter
-* push down limit ( use tshark -c)
-* integrate with duckdb file system ( e.g allow to pull pcaps from remote )
-* tshark -G via "select * from glossary()"
-* read_pcap with additional option for specific protocols
+
 
