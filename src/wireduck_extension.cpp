@@ -31,6 +31,18 @@ namespace duckdb {
         }
       };
 
+      struct InitializeGlossaryData : FunctionData {
+        string status_message;
+        bool finished = false;  // Track if Glossary finished init
+        bool Equals(const FunctionData &other_p) const override {
+          throw NotImplementedException("InitializeGlossaryData::Equals");
+        }
+      
+        unique_ptr<FunctionData> Copy() const override {
+          throw NotImplementedException("InitializeGlossaryData::Copy");
+        }
+      };
+
 static unique_ptr<FunctionData> DefaultPcapBindFunction(ClientContext &context, TableFunctionBindInput &input,
         vector<LogicalType> &return_types, vector<string> &names) {
     auto result = make_uniq<PcapBindData>();
@@ -126,48 +138,295 @@ static void PcapTableFunction(ClientContext &context, TableFunctionInput &data, 
     }
 }
 
-inline void WireduckScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &name_vector = args.data[0];
-    UnaryExecutor::Execute<string_t, string_t>(
-	    name_vector, result, args.size(),
-	    [&](string_t name) {
-			return StringVector::AddString(result, "Wireduck "+name.GetString()+" ^^^");
-        });
+// **Function to check if TShark is installed**
+static bool IsTSharkAvailable() {
+    FILE *pipe = popen("tshark --version", "r");
+    if (!pipe) {
+        return false; // Unable to execute command
+    }
+
+    char buffer[128];
+    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        pclose(pipe);
+        return true; // TShark is installed
+    }
+
+    pclose(pipe);
+    return false; // No output means TShark is missing
 }
 
-inline void WireduckOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &name_vector = args.data[0];
-    UnaryExecutor::Execute<string_t, string_t>(
-	    name_vector, result, args.size(),
-	    [&](string_t name) {
-			return StringVector::AddString(result, "Wireduck " + name.GetString() +
-                                                     ", my linked OpenSSL version is " +
-                                                     OPENSSL_VERSION_TEXT );
-        });
+// **Function to Populate Tables Using TShark**
+static void PopulateGlossary(Connection &conn) {
+    std::cout << "[WireDuck] Populating glossary tables from TShark (this may take a minute for two)..." << std::endl;
+
+    FILE *pipe;
+
+    // **Insert Protocols**
+    pipe = popen("tshark -G protocols", "r");
+    if (pipe) {
+        char buffer[1024];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            std::stringstream ss(buffer);
+            std::string id, protocol_name, description;
+            std::getline(ss, id, '\t');
+            std::getline(ss, protocol_name, '\t');
+            std::getline(ss, description, '\t');
+
+            conn.Query("INSERT INTO glossary_protocols VALUES (" + id + ", '" + protocol_name + "', '" + description + "')");
+        }
+        pclose(pipe);
+    }
+
+    // **Insert Fields**
+    pipe = popen("tshark -G fields", "r");
+    if (pipe) {
+        char buffer[1024];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            std::stringstream ss(buffer);
+            std::string id, protocol, field_name, field_type, display, filterable, description;
+            std::getline(ss, id, '\t');
+            std::getline(ss, protocol, '\t');
+            std::getline(ss, field_name, '\t');
+            std::getline(ss, field_type, '\t');
+            std::getline(ss, display, '\t');
+            std::getline(ss, filterable, '\t');
+            std::getline(ss, description, '\t');
+
+            conn.Query("INSERT INTO glossary_fields VALUES (" + id + ", '" + protocol + "', '" + field_name + "', '" + field_type + "', " + (display == "T" ? "TRUE" : "FALSE") + ", " + (filterable == "T" ? "TRUE" : "FALSE") + ", '" + description + "')");
+        }
+        pclose(pipe);
+    }
+
+    // **Insert Values**
+    pipe = popen("tshark -G values", "r");
+    if (pipe) {
+        char buffer[1024];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            std::stringstream ss(buffer);
+            std::string id, field_name, value, meaning;
+            std::getline(ss, id, '\t');
+            std::getline(ss, field_name, '\t');
+            std::getline(ss, value, '\t');
+            std::getline(ss, meaning, '\t');
+
+            conn.Query("INSERT INTO glossary_values VALUES (" + id + ", '" + field_name + "', '" + value + "', '" + meaning + "')");
+        }
+        pclose(pipe);
+    }
+
+    std::cout << "[WireDuck] Glossary tables populated." << std::endl;
+}
+
+// **Procedure to Initialize the WireDuck Glossary**
+static unique_ptr<FunctionData> InitializeGlossaryBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types, vector<string> &names) {
+    
+    // Returning a single string column
+    return_types.push_back(LogicalType::VARCHAR);
+    names.push_back("status_message");
+    return   make_uniq<InitializeGlossaryData>();;
+}
+
+// **Initialize and Populate glossary_protocols**
+static void InitializeGlossaryProtocols(Connection &conn) {
+    // **Create the table**
+    conn.Query("BEGIN TRANSACTION");
+    conn.Query("CREATE TABLE IF NOT EXISTS glossary_protocols ("
+               "full_name TEXT NOT NULL, "
+               "short_name TEXT, "
+               "filter_name TEXT NOT NULL UNIQUE, "
+               "can_enable BOOLEAN NOT NULL, "
+               "is_displayed BOOLEAN NOT NULL, "
+               "is_filterable BOOLEAN NOT NULL);");
+    conn.Query("COMMIT");
+
+    // **Run TShark -G protocols**
+    FILE *pipe = popen("tshark -G protocols", "r");
+    if (!pipe) {
+        throw std::runtime_error("[WireDuck] ERROR: Failed to execute 'tshark -G protocols'");
+    }
+
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        std::stringstream ss(buffer);
+        std::string full_name, short_name, filter_name, can_enable, is_displayed, is_filterable;
+
+        // Read all six columns (handling missing values)
+        if (!std::getline(ss, full_name, '\t') ||
+            !std::getline(ss, short_name, '\t') ||
+            !std::getline(ss, filter_name, '\t') ||
+            !std::getline(ss, can_enable, '\t') ||
+            !std::getline(ss, is_displayed, '\t') ||
+            !std::getline(ss, is_filterable, '\t')) {
+            std::cerr << "[WireDuck] Warning: Skipping malformed line: " << buffer << std::endl;
+            continue;
+        }
+
+        // Trim whitespace
+        auto trim = [](std::string &s) {
+            s.erase(0, s.find_first_not_of(" \t\r\n"));
+            s.erase(s.find_last_not_of(" \t\r\n") + 1);
+        };
+        trim(full_name);
+        trim(short_name);
+        trim(filter_name);
+
+        // Escape single quotes for SQL safety
+        auto escape_quotes = [](std::string &s) {
+            size_t pos = 0;
+            while ((pos = s.find("'", pos)) != std::string::npos) {
+                s.replace(pos, 1, "''");
+                pos += 2;
+            }
+        };
+        escape_quotes(full_name);
+        escape_quotes(short_name);
+
+        // Convert 'T'/'F' to Boolean (1/0)
+        std::string can_enable_bool = (can_enable == "T") ? "1" : "0";
+        std::string is_displayed_bool = (is_displayed == "T") ? "1" : "0";
+        std::string is_filterable_bool = (is_filterable == "T") ? "1" : "0";
+
+        // Construct and execute the SQL query
+        std::string query =
+            "INSERT INTO glossary_protocols (full_name, short_name, filter_name, can_enable, is_displayed, is_filterable) "
+            "VALUES ('" +
+            full_name + "', '" + short_name + "', '" + filter_name + "', " + can_enable_bool + ", " + is_displayed_bool +
+            ", " + is_filterable_bool + ")";
+
+        conn.Query(query);
+    }
+
+    pclose(pipe);
+}
+
+static void InitializeGlossaryFields(Connection &conn) {
+    // **Create the glossary_fields table**
+    conn.Query("BEGIN TRANSACTION");
+    conn.Query("CREATE TABLE IF NOT EXISTS glossary_fields ("
+               "field_name TEXT NOT NULL UNIQUE, "
+               "filter_name TEXT NOT NULL UNIQUE, "
+               "field_type TEXT NOT NULL, "
+               "protocol_filter_name TEXT NOT NULL, "
+               "encoding TEXT, "
+               "bitmask TEXT, "
+               "description TEXT);");
+
+    conn.Query("COMMIT");
+    // **Run TShark -G fields**
+    FILE *pipe = popen("tshark -G fields", "r");
+    if (!pipe) {
+        throw std::runtime_error("[WireDuck] ERROR: Failed to execute 'tshark -G fields'");
+    }
+
+    char buffer[2048];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        std::stringstream ss(buffer);
+        std::string row_type, field_name, filter_name, field_type, protocol_filter_name, encoding, bitmask, description;
+
+        // Read the row type first (P or F)
+        if (!std::getline(ss, row_type, '\t')) {
+            std::cerr << "[WireDuck] Warning: Skipping malformed line: " << buffer << std::endl;
+            continue;
+        }
+
+        if (row_type != "F") {
+            continue;  // Skip protocol (P) rows, we only care about fields
+        }
+
+        // Read all expected columns, handling missing ones
+        std::getline(ss, field_name, '\t');
+        std::getline(ss, filter_name, '\t');
+        std::getline(ss, field_type, '\t');
+        std::getline(ss, protocol_filter_name, '\t');  // ✅ Renamed from "protocol"
+        std::getline(ss, encoding, '\t');
+        std::getline(ss, bitmask, '\t');
+        std::getline(ss, description, '\t');
+
+        // Trim whitespace
+        auto trim = [](std::string &s) {
+            s.erase(0, s.find_first_not_of(" \t\r\n"));
+            s.erase(s.find_last_not_of(" \t\r\n") + 1);
+        };
+        trim(field_name);
+        trim(filter_name);
+        trim(field_type);
+        trim(protocol_filter_name);
+        trim(encoding);
+        trim(bitmask);
+        trim(description);
+
+        // Escape single quotes for SQL safety
+        auto escape_quotes = [](std::string &s) {
+            size_t pos = 0;
+            while ((pos = s.find("'", pos)) != std::string::npos) {
+                s.replace(pos, 1, "''");
+                pos += 2;
+            }
+        };
+        escape_quotes(field_name);
+        escape_quotes(filter_name);
+        escape_quotes(field_type);
+        escape_quotes(protocol_filter_name);
+        escape_quotes(description);
+
+        // Construct and execute the SQL query
+        std::string query =
+            "INSERT INTO glossary_fields (field_name, filter_name, field_type, protocol_filter_name, encoding, bitmask, description) "
+            "VALUES ('" +
+            field_name + "', '" + filter_name + "', '" + field_type + "', '" + protocol_filter_name + "', '" + encoding + "', '" + bitmask + "', '" + description + "')";
+
+        conn.Query(query);
+    }
+
+    pclose(pipe);
+    
+}
+
+static void InitializeGlossaryProcedure(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+    auto &bind_data = data.bind_data->CastNoConst<InitializeGlossaryData>();
+
+    // If already finished, signal end of data
+    if (bind_data.finished) {
+        output.SetCardinality(0);
+        return;
+    }
+    DatabaseInstance &db = DatabaseInstance::GetDatabase(context);  //Ensure function uses the same DB instance
+    Connection conn(db);  // Pass the correct connection
+    idx_t row_idx = 0;
+    std::cout << "[WireDuck] initializing glossary tables, may take a few minutes .."<< std::endl;
+    InitializeGlossaryProtocols(conn);
+    output.SetValue(0, row_idx++, Value("glossary_protocols initialized")); 
+    InitializeGlossaryFields(conn);
+    output.SetValue(0, row_idx++, Value("glossary_fields initialized")); 
+
+    // Output a success message as a single row
+    output.SetCardinality(row_idx);
+    bind_data.finished=true;
 }
 
 static void LoadInternal(DatabaseInstance &instance) {
     // Register a scalar function
     auto table_function = TableFunction("read_pcap", {LogicalType::VARCHAR},  PcapTableFunction,DefaultPcapBindFunction);
-    // TODO support pojectio and multifile
     // table_function.projection_pushdown = true;
     // MultiFileReader::AddParameters(table_function);
     // ExtensionUtil::RegisterFunction(instance, MultiFileReader::CreateFunctionSet(table_function)); 
     ExtensionUtil::RegisterFunction(instance,table_function);
-
-    auto wireduck_scalar_function = ScalarFunction("wireduck", {LogicalType::VARCHAR}, LogicalType::VARCHAR, WireduckScalarFun);
-    ExtensionUtil::RegisterFunction(instance, wireduck_scalar_function);
-
-    // Register another scalar function
-    auto wireduck_openssl_version_scalar_function = ScalarFunction("wireduck_openssl_version", {LogicalType::VARCHAR},
-                                                LogicalType::VARCHAR, WireduckOpenSSLVersionScalarFun);
-    ExtensionUtil::RegisterFunction(instance, wireduck_openssl_version_scalar_function);
-
+    
+    auto initialize_glossary =TableFunction ("initialize_glossary", {}, InitializeGlossaryProcedure, InitializeGlossaryBind);
+    ExtensionUtil::RegisterFunction(instance, initialize_glossary);
 
 }
-
 void WireduckExtension::Load(DuckDB &db) {
+    if (!IsTSharkAvailable()) {
+        throw std::runtime_error(
+            "[WireDuck] ERROR: TShark is not installed or not accesible. Please install TShark before using this extension."
+        );
+    }
+
+    std::cout << "[WireDuck] TShark detected. Loading extension..." << std::endl;
 	LoadInternal(*db.instance);
+    
+    
 }
 std::string WireduckExtension::Name() {
 	return "wireduck";
