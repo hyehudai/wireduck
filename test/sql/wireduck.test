@@ -2,25 +2,19 @@
 # description: test wireduck extension
 # group: [wireduck]
 
-# Before we load the extension, this will fail
-statement error
-SELECT wireduck('Sam');
-----
-Catalog Error: Scalar Function with name wireduck does not exist!
-
 # Require statement will ensure this test is run with this extension loaded
 require wireduck
-
-# Confirm the extension works
-
+# test: glossary init
 query I
-call initialize_glossary();
+CALL initialize_glossary();
 ----
 glossary_protocols initialized
 glossary_fields initialized
 
+
+# test: read first packet in file
 query IIIII
-SELECT * from read_pcap('fix.pcap') limit 1;
+SELECT * from read_pcap('fix.pcap') LIMIT 1;
 ----
 2015-11-28 17:59:35
 1

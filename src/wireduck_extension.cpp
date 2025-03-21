@@ -113,6 +113,7 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
     }
     
     // **Start TShark process in reading from stdin**
+    // std::cout<<command << std::endl;
     bind_data->pipe = popen(command.c_str(), "r");  // Now open TShark for reading
     if (!bind_data->pipe) {
         throw std::runtime_error("Failed to open TShark output.");
@@ -125,6 +126,27 @@ std::string Trim(const std::string &s) {
     auto end = s.find_last_not_of(" \t\r\n");
     return (start == std::string::npos) ? "" : s.substr(start, end - start + 1);
 }
+
+// Parses a TShark output line into a vector of clean strings
+inline std::vector<std::string> ParseTsharkLine(char* buffer) {
+    std::vector<std::string> fields;
+
+    // strtok modifies the buffer, so we operate on it directly
+    char* token = std::strtok(buffer, "\t");
+    while (token != nullptr) {
+        std::string value(token);
+
+        // Strip trailing newline and carriage return
+        while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
+            value.pop_back();
+        }
+
+        fields.push_back(value);
+        token = std::strtok(nullptr, "\t");
+    }
+
+    return fields;
+}
 static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
     auto &bind_data = data.bind_data->CastNoConst<ReadPcapBindData>();
     auto &fs = FileSystem::GetFileSystem(context);
@@ -135,33 +157,38 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
         return;
     }
 
-    char buffer[1024];
+    size_t num_columns = bind_data.selected_fields.size();
+    size_t max_field_len = 256;  // adjust if fields are longer on average
+    size_t buffer_size = num_columns * max_field_len + 1;
+    std::vector<char> buffer(buffer_size);  // dynamically sized buffer
+    
     idx_t row_idx = 0;
     idx_t max_rows = STANDARD_VECTOR_SIZE;  // Default DuckDB chunk size
     
 
     // Read from TShark process in chunks
-    while (fgets(buffer, sizeof(buffer), bind_data.pipe) != nullptr) {
-        
+    while (fgets(buffer.data(), buffer.size(), bind_data.pipe) != nullptr) {
         if (row_idx >= max_rows) {
-           
-            break;  // Stop when chunk size is reached
+            break;
         }
 
-        std::stringstream ss(buffer);
+        std::stringstream ss(buffer.data());
         std::vector<std::string> row;
         std::string field;
-
+        // std::vector<std::string> row = ParseTsharkLine(buffer.data());  TODO use this 
+        
         while (std::getline(ss, field, '\t')) {
             row.push_back(Trim(field));
         }
         if (row.size() < 5) continue;  // Skip malformed lines  , 5 is the minimum default feidls we add
+        // std::cout <<std::endl;
         // Store in DuckDB output
         for (size_t col_idx = 0; col_idx < bind_data.selected_fields.size(); col_idx++) {
             try {
                 std::string field_value = row[col_idx];  // Extract raw value
                 LogicalType field_type = bind_data.field_types[col_idx];  // Get expected type
                 std::string field_name = bind_data.selected_fields[col_idx];  // Get field name
+                // std::cout <<col_idx<<" "<< field_name <<":" << ":"<<field_value;
                 if (field_value.empty()) {
                     //  If field is blank, set NULL instead of throwing an exception
                     output.SetValue(col_idx, row_idx, Value());
