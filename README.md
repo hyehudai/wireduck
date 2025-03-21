@@ -3,11 +3,14 @@ This repository is based on https://github.com/duckdb/extension-template, check 
 
 ---
 # DuckDB Wireduck Extension
+
 ![Description](./docs/wireduck.jpg)
+
 
 This extension, Wireduck, allow you to read PCAP files using duckdb.
 It uses behind the scenes the tshark utility and allows flexible parsing 
-and analysis of network captures.
+and analysis of network captures, for every protocoll supported by wireshark's dissectors.
+#### Dissection is the first step to analysis.  ><(((('>
 
 ## Installation
 ### Prerequities
