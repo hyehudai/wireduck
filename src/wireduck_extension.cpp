@@ -240,20 +240,13 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
 
 }
 // **Function to check if TShark is installed**
-static bool IsTSharkAvailable() {
-    FILE *pipe = popen("tshark --version", "r");
-    if (!pipe) {
-        return false; // Unable to execute command
-    }
-
-    char buffer[128];
-    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        pclose(pipe);
-        return true; // TShark is installed
-    }
-
-    pclose(pipe);
-    return false; // No output means TShark is missing
+static bool CheckTSharkAvailable() {
+    int exit_code = std::system("tshark -v > /dev/null 2>&1");
+    return exit_code == 0;
+}
+// Scalar function: returns BOOLEAN
+static void CheckTsharkFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+    result.SetValue(0, Value::BOOLEAN(CheckTSharkAvailable()));
 }
 
 // **Function to Populate Tables Using TShark**
@@ -507,6 +500,16 @@ static void InitializeGlossaryProcedure(ClientContext &context, TableFunctionInp
 }
 
 static void LoadInternal(DatabaseInstance &instance) {
+
+    // scalar function to validate tshark
+    auto check_tshark_func=ScalarFunction (
+        "check_tshark_installed",                             // SQL name
+        {},                                                   // no parameters
+        LogicalType::BOOLEAN,                                 // return type
+        CheckTsharkFunction                                   // function pointer
+    );
+    ExtensionUtil::RegisterFunction(instance, check_tshark_func);
+
     // function with selected protocol
     auto read_pcap_default = TableFunction("read_pcap",
         {LogicalType::VARCHAR },  ReadPcapFunction,ReadPcapBind);
@@ -522,10 +525,9 @@ static void LoadInternal(DatabaseInstance &instance) {
 
 }
 void WireduckExtension::Load(DuckDB &db) {
-    if (!IsTSharkAvailable()) {
-        throw std::runtime_error(
-            "[WireDuck] ERROR: TShark is not installed or not accesible. Please install TShark before using this extension."
-        );
+    if (!CheckTSharkAvailable()) {
+        throw InvalidInputException("[WireDuck] ERROR: TShark is not installed or not accesible. Please install TShark before using this extension.");
+       
     }
 
     std::cout << "[WireDuck] TShark detected. Loading extension..." << std::endl;
