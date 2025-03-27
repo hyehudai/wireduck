@@ -13,14 +13,11 @@ cd "$TSHARK_DIR"
 # Download and extract
 wget -N "$TSHARK_URL"
 dpkg -x "$TSHARK_DEB" .
-
-# Create a bin directory with symlink
-mkdir -p "$TSHARK_DIR/bin"
-ln -sf "$TSHARK_DIR/usr/bin/tshark" "$TSHARK_DIR/bin/tshark"
+ 
 
 # Add alias to your shell temporarily (for current session)
-echo "alias tshark='$TSHARK_DIR/bin/tshark'"
-alias tshark="$TSHARK_DIR/bin/tshark"
+#echo "alias tshark='$TSHARK_DIR/bin/tshark'"
+alias tsharp="$TSHARK_DIR/usr/bin/tshark"
 
 # Show version to confirm
-tshark -v
+tsharp -v
