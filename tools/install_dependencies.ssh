@@ -1,0 +1,7 @@
+# extensions/wireduck/tools/install_dependencies.sh
+#!/bin/bash
+set -euxo pipefail
+
+# Install tshark non-interactively
+DEBIAN_FRONTEND=noninteractive sudo apt-get update -y
+DEBIAN_FRONTEND=noninteractive sudo apt-get install -y tshark
