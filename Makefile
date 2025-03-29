@@ -10,7 +10,7 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 configure_ci:
 	@echo "Running wireduck configure step..."
 	@echo "🐳 Building custom tshark Docker image..."
-	apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y tshark && \
-    apt-get clean && \
+	
+    apt-get install -y tshark 
+	
 	
