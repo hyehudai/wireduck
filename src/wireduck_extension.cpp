@@ -79,6 +79,22 @@ void FetchSelectedFields(ClientContext &context, const std::vector<std::string> 
 static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFunctionBindInput &input,
     vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<ReadPcapBindData>();
+    Connection conn(DatabaseInstance::GetDatabase(context));
+    // check glossary initialized
+    try {
+        auto result = conn.Query("SELECT 1 FROM glossary_protocols LIMIT 1");
+    } catch (...) {
+        throw BinderException("WireDuck glossary not initialized. Please run: CALL initialize_glossary();");
+    }
+
+    try {
+        auto result = conn.Query("SELECT 1 FROM glossary_fields LIMIT 1");
+    } catch (...) {
+        throw BinderException("WireDuck glossary not initialized. Please run: CALL initialize_glossary();");
+    }
+
+
+
 
     // Extract the file path argument
     auto &fs = FileSystem::GetFileSystem(context);
