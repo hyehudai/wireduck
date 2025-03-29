@@ -19,6 +19,8 @@ jobs:
       duckdb_version: main
       ci_tools_version: main
       extension_name: wireduck
+      exclude_archs: osx_amd64;osx_arm64;windows_amd64;wasm
+
 
   duckdb-stable-build:
     name: Build extension binaries
@@ -27,3 +29,4 @@ jobs:
       duckdb_version: v1.2.1
       ci_tools_version: v1.2.1
       extension_name: wireduck
+      exclude_archs: osx_amd64;osx_arm64;windows_amd64;wasm
