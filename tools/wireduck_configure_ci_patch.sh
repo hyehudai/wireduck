@@ -29,9 +29,9 @@ chmod +x "$TSHARK_DIR/bin/tshark"
 # Make sure this path is picked up during build/test
 if [ -n "${GITHUB_PATH:-}" ]; then
   echo "$TSHARK_DIR/bin" >> "$GITHUB_PATH"
-else
-  export PATH="$TSHARK_DIR/bin:$PATH"
 fi
+export PATH="$TSHARK_DIR/bin:$PATH"
+
 
 # Test the wrapper
 tshark -v || echo "⚠️ Wrapper not working yet."
