@@ -14,8 +14,7 @@ cd "$TSHARK_DIR"
 wget -N "$TSHARK_URL"
 dpkg -x "$TSHARK_DEB" .
 
-# Optional: Confirm it works
-./usr/bin/tshark -v
+
 
 # Create a wrapper script that sets the needed LD_LIBRARY_PATH and runs tshark
 mkdir -p "$TSHARK_DIR/bin"
