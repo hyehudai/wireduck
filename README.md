@@ -89,11 +89,11 @@ load wireduck;
 [WireDuck] initializing glossary tables, may take a few minutes ..
 [WireDuck] glossary initialized.
 ```
-using the glossary tables wireduck can support specific protocols and retun the proper schema once protocol[s] are selected using the *protocols* parameter
+using the glossary tables wireduck can deduce the proper returned schema once specific protocol[s] are selected using the *protocols* parameter
 
 for example 
 ```
-select *    from read_pcap('~/wireduck/fix.pcap', protocols:=['udp'] ,climit:=4)   ;
+select * from read_pcap('~/wireduck/fix.pcap', protocols:=['udp'] ,climit:=4)   ;
 ┌─────────────────────┬──────────────┬───────────┬──────────────────────┬───┬──────────────────────┬───────────────────┬──────────────────────┬─────────────────────┬──────────────────────┐
 │  frame.time_epoch   │ frame.number │ frame.len │   frame.protocols    │ … │ udplite.checksum_c…  │ udp.checksum.zero │ udp.checksum.partial │ udp.length.bad_zero │     _ws.col.info     │
 │      timestamp      │    int64     │   int64   │       varchar        │   │       varchar        │      varchar      │       varchar        │       varchar       │       varchar        │
