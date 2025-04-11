@@ -3,19 +3,28 @@ This repository is based on https://github.com/duckdb/extension-template, check 
 
 ---
 # DuckDB Wireduck Extension
+#### Dissection is the first step to analysis.  ><(((('>
 
 ![Description](./docs/wireduck.jpg)
 
 
-This extension, Wireduck, allow you to read PCAP files using duckdb.
-It uses behind the scenes the tshark utility and allows flexible parsing 
-and analysis of network captures, for every protocoll supported by wireshark's dissectors.
-#### Dissection is the first step to analysis.  ><(((('>
+## What is this tool good for ?
+This extension, Wireduck, allow reading PCAP files using duckdb.
+
+[Wireshark](https://www.wireshark.org/) is the leading open source tool for network traffic analysis, [tshark](https://www.wireshark.org/docs/man-pages/tshark.html), Wireshark's CLI, allows filterting and fetching netework data.
+Howerver, when analytics, aggregation, joining and other data wrangleing tasks are in order things gets a little more complex and data wrangling is required. This is where this extension can help by harnessing the argonomity of duckdb and SQL.
+
+In addiiton, while duckdb suports leading data format (parquet ,json, delta, etc) wireshark supports over 3000 protocols. from IoT to Telcom to financial protocols.
+So any new dissector developed for wireshark immediatly enables analytics over the data.
+
+## How wireduck works ?
+Wireduck runs tshark behind the scenes utilizing wireshark's glossary to be able to parse any packet from any supported protocol to its fields. 
+
 
 ## Installation
 ### Prerequities
-tshark ( installed part of wireshark) is installed.
-and validate its exists via
+tshark (installed as part of wireshark) is installed.
+validate its exists via
 ```
 tshark --version
 ```
@@ -24,12 +33,20 @@ installation is simple through the DuckDB Community Extension repository, just t
 INSTALL wireduck FROM community
 LOAD wireduck
 ```
+
+
+
 ## Examples
 
 ### the `read_pcap` function
 explain how it works behind the scens with tshark and the stdin
-### the `glossary` function
 
+### the `glossary` tables
+glossary tables are the data dictionary of all protocols and fields supported by wireshark.
+it allows wireduck to dynamically build the schema according to the fetached protocol.
+
+* glossary_protocols - contains the supported protocol.
+* glossary_fields - contains supported fields per protocol.
 
 ### File IO Limitations
 The `read_pcap` function is NOT integrated into DuckDB's file system abstraction.

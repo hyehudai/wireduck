@@ -30,16 +30,9 @@ namespace duckdb {
         bool finished = false;  // Track if TShark has finished processing
         std::vector<std::string> selected_fields;
         std::vector<duckdb::LogicalType> field_types;
+        FILE *pipe = nullptr;
     };
 
-    struct PcapGlobalState : GlobalTableFunctionState {
-        mutex lock;
-    
-        FILE *pipe = nullptr;
-    
-        vector<ColumnIndex> column_indexes;
-        optional_ptr<TableFilterSet> filters;
-    };
       
 static duckdb::LogicalType MapTsharkTypeToDuckDB(const std::string &tshark_type) {
         if (tshark_type.find("UINT") != std::string::npos || tshark_type.find("INT") != std::string::npos) {
@@ -108,41 +101,21 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
     }
     // Fetch the selected fields and corresponding DuckDB types
     FetchSelectedFields(context, protocols, bind_data->selected_fields, bind_data->field_types);
-     // Construct return columns based on fetched fields, and tshark command
-     for (size_t i = 0; i < bind_data->selected_fields.size(); i++) {
+    // Construct return columns based on fetched fields, and tshark command
+    std::string command;
+    command = "tshark -r " + bind_data->file_path + " -T fields  ";
+    for (size_t i = 0; i < bind_data->selected_fields.size(); i++) {
 
         names.push_back(bind_data->selected_fields[i]);
         return_types.push_back(bind_data->field_types[i]);
+        command.append (" -e " + bind_data->selected_fields[i] );
+    }
+    bind_data->pipe = popen(command.c_str(), "r");  // Now open TShark for reading
+    if (!bind_data->pipe) {
+        throw std::runtime_error("Failed to open TShark output.");
     }
     return std::move(bind_data);
 }
-
-
-unique_ptr<GlobalTableFunctionState> PcapGlobalInit(ClientContext &context, TableFunctionInitInput &input) {
-  
-	auto global_state_result = make_uniq<PcapGlobalState>();
-	auto &global_state = *global_state_result;
-    auto &bind_data = input.bind_data->CastNoConst<ReadPcapBindData>();
-	global_state.column_indexes = input.column_indexes;
-	global_state.filters = input.filters;
-    std::string command;
-    command = "tshark -r " + bind_data.file_path + " -T fields  ";
-    
-    //only fetch the columns in the Select 
-    for (size_t i = 0; i < global_state.column_indexes.size(); i++) {
-
-        command.append (" -e " + bind_data.selected_fields[global_state.column_indexes[i].GetPrimaryIndex()] );
-    }
-    
-    // **Start TShark process in reading from stdin**
-    std::cout<<command << std::endl;
-    global_state.pipe = popen(command.c_str(), "r");  // Now open TShark for reading
-    if (!global_state.pipe) {
-        throw std::runtime_error("Failed to open TShark output.");
-    }
-	return global_state_result;
-}
-
 
 
 std::string Trim(const std::string &s) {
@@ -173,7 +146,6 @@ inline std::vector<std::string> ParseTsharkLine(char* buffer) {
 }
 static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
     auto &bind_data = data.bind_data->CastNoConst<ReadPcapBindData>();
-    auto &global_state = data.global_state->Cast<PcapGlobalState>();
     auto &fs = FileSystem::GetFileSystem(context);
     
     // If already finished, signal end of data
@@ -192,7 +164,7 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
     
 
     // Read from TShark process in chunks
-    while (fgets(buffer.data(), buffer.size(), global_state.pipe) != nullptr) {
+    while (fgets(buffer.data(), buffer.size(), bind_data.pipe) != nullptr) {
         if (row_idx >= max_rows) {
             break;
         }
@@ -206,35 +178,20 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
             row.push_back(Trim(field));
         }
         if (row.size() < 1) continue;  // Skip malformed lines  , 5 is the minimum default feidls we add
-        size_t curr_projected_index=0;
         // Store in DuckDB output
         for (size_t col_idx = 0; col_idx < bind_data.selected_fields.size(); col_idx++) {
             try {
-                std::string field_value;
-                std::cout <<0;
+                std::string field_value = row[col_idx];  // Extract raw value  
                 LogicalType field_type = bind_data.field_types[col_idx];      // Get expected type
                 std::string field_name = bind_data.selected_fields[col_idx];  // Get field name
-                // check if thes fields was pushed doen to be fetched
-                if (global_state.column_indexes.size() <=curr_projected_index || col_idx != global_state.column_indexes[curr_projected_index].GetPrimaryIndex())
-                {
-                    std::cout <<1;
-                    continue;
-                }
-                else
-                { // its a projected field we need to get it 
-                    std::cout <<2;
-                    field_value = row[curr_projected_index];  // Extract raw value  
-                    curr_projected_index++;
-                }
+
                 if (field_value.empty()) {
                     //  If field is blank, set NULL instead of throwing an exception
-                    std::cout <<3;
                     output.SetValue(col_idx, row_idx, Value());
                     continue;
                 }
                 switch (bind_data.field_types[col_idx].id()) {
                     case LogicalTypeId::BIGINT:
-                        std::cout <<4;
                         output.SetValue(col_idx, row_idx, Value::BIGINT(std::stoll(row[col_idx])));
                         break;
                     case LogicalTypeId::DOUBLE:
@@ -244,11 +201,9 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
                         output.SetValue(col_idx, row_idx, Value::BOOLEAN(row[col_idx] == "1"));
                         break;
                     case LogicalTypeId::TIMESTAMP:
-                        std::cout <<5;
                         output.SetValue(col_idx, row_idx, Value::TIMESTAMP(Timestamp::FromEpochSeconds(std::stod(row[col_idx]))));
                         break;
                     default:
-                        std::cout <<6;
                         output.SetValue(col_idx, row_idx, Value(row[col_idx]));  // Default to TEXT
                         break;
                 }
@@ -258,9 +213,6 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
                           << bind_data.selected_fields[col_idx]  // Field name
                           << " | row_idx: " << row_idx  // row_idx  
                           << " | col_idx: " << col_idx  // Raw value
-                          << " | curr_projected_index: " << curr_projected_index  // Raw value
-                          << " | bind_data.field_types.size: " << bind_data.field_types.size()  // Raw value
-                          << " | global_state.column_indexes.size: " << global_state.column_indexes.size()  // Raw value
                           << " | Value: " << row[col_idx]  // Raw value
                           << " | Expected Type: " << bind_data.field_types[col_idx].ToString()  // Type
                           << " | Error: " << e.what()  // Error message
@@ -278,8 +230,8 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
     if (row_idx == 0) {
         output.SetCardinality(0);
         bind_data.finished = true;
-        pclose(global_state.pipe);
-        global_state.pipe = nullptr;
+        pclose(bind_data.pipe);
+        bind_data.pipe = nullptr;
     } else {
         output.SetCardinality(row_idx);
     }
@@ -556,13 +508,11 @@ static void LoadInternal(DatabaseInstance &instance) {
 
     // function with selected protocol
     auto read_pcap_default = TableFunction("read_pcap",
-        {LogicalType::VARCHAR },  ReadPcapFunction,ReadPcapBind,PcapGlobalInit);
-        read_pcap_default.projection_pushdown=true;
-        read_pcap_default.filter_pushdown=true;
+        {LogicalType::VARCHAR },  ReadPcapFunction,ReadPcapBind);
 
 
     auto read_pcap_selected = TableFunction("read_pcap",
-        {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)},  ReadPcapFunction,ReadPcapBind,PcapGlobalInit);
+        {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)},  ReadPcapFunction,ReadPcapBind);
     
     ExtensionUtil::RegisterFunction(instance, read_pcap_default);
     ExtensionUtil::RegisterFunction(instance, read_pcap_selected);
