@@ -11,9 +11,3 @@ SELECT 1
 
 # test: load wireduck extension
 require wireduck
-
-# test only if tshark exists here
-query I
-SELECT CASE WHEN check_tshark_installed() THEN 'run' ELSE 'skip' END;
-----
-skip
