@@ -60,7 +60,8 @@ select * from read_pcap('~/wireduck/fix.pcap')   limit 10;
 │ 10 rows                                                                                                                                                                   5 columns │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-Additional parameter supported is *climit* - that corresponded with tshark "-c" option to limit that number of read captured packets.
+Additional parameter supported is *climit* - that corresponds to tshark "-c" option to limit the number of captured packets read.
+(this is more efficient from using SQL limit)
 ```
 select * from read_pcap('~/wireduck/fix.pcap', climit:=4)   ;
 ┌─────────────────────┬──────────────┬───────────┬──────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -76,22 +77,24 @@ select * from read_pcap('~/wireduck/fix.pcap', climit:=4)   ;
 ```
 
 ### the `glossary` tables
-glossary tables are the data dictionary of all protocols and fields supported by wireshark.
+Glossary tables are the data dictionary of all protocols and fields supported by wireshark.
 it allows wireduck to dynamically build the schema according to the fetached protocol.
 
-* glossary_protocols - contains the supported protocol.
-* glossary_fields - contains supported fields per protocol.
+* glossary_protocols - contains the supported protocol (same as "tshark -G protocol").
+* glossary_fields - contains supported fields per protocol (same as "tshark -G fields").
 
-glossary tables are loaded once during the extension load. and in takes a few minutes to load.
+glossary tables are loaded once during the extension load.
 ```
-load wireduck;
+D load wireduck;
 [WireDuck] TShark detected. Loading extension...
 [WireDuck] initializing glossary tables, may take a few minutes ..
 [WireDuck] glossary initialized.
+D .tables
+glossary_fields     glossary_protocols
 ```
-using the glossary tables wireduck can deduce the proper returned schema once specific protocol[s] are selected using the *protocols* parameter
+using the glossary tables wireduck can deduce the returned schema once specific protocol[s] are selected using the *protocols* parameter.
 
-for example 
+for example:
 ```
 select * from read_pcap('~/wireduck/fix.pcap', protocols:=['udp'] ,climit:=4)   ;
 ┌─────────────────────┬──────────────┬───────────┬──────────────────────┬───┬──────────────────────┬───────────────────┬──────────────────────┬─────────────────────┬──────────────────────┐
@@ -106,7 +109,7 @@ select * from read_pcap('~/wireduck/fix.pcap', protocols:=['udp'] ,climit:=4)   
 │ 4 rows                                                                                                                                                              32 columns (9 shown) │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-note that 32 colums are selected, id we choose to descrive the query ALl the UDP protocol supported fiels are selected.
+note that 32 colums are selected. this is becasue tshark suports 32 fields for the udp protocol.
 
 ```
 desc select * from read_pcap('~/wireduck/fix.pcap', protocols:=['udp'] ,climit:=4)   ;
@@ -162,6 +165,8 @@ D select count(*) , sum ("tcp.len") , "tcp.srcport" ,"tcp.dstport"   from read_p
 │           56 │          19702 │       53867 │       11001 │
 └──────────────┴────────────────┴─────────────┴─────────────┘
 ```
+
+
 ### File IO Limitations
 
 ### File IO Limitations
