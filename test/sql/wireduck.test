@@ -8,3 +8,32 @@ query I
 SELECT 1
 ----
 1
+
+# test: load wireduck extension
+require wireduck
+
+# test only if tshark exists here
+query I
+SELECT CASE WHEN check_tshark_installed() THEN 'run' ELSE 'skip' END;
+----
+run
+
+# Require statement will ensure this test is run with this extension loaded
+require wireduck
+# test: glossary init
+query I
+CALL initialize_glossary();
+----
+glossary_protocols initialized
+glossary_fields initialized
+
+
+# test: read first packet in file
+query IIIII
+SELECT * from read_pcap('fix.pcap') LIMIT 1;
+----
+2015-11-28 17:59:35
+1
+74
+eth:ethertype:ip:tcp
+53867 → 11001 [SYN] Seq=0 Win=43690 Len=0 MSS=65495 SACK_PERM TSval=734420 TSecr=0 WS=128
