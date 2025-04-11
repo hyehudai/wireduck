@@ -27,10 +27,18 @@ namespace duckdb {
 
     struct ReadPcapBindData : public TableFunctionData {
         std::string file_path;
-        FILE *pipe = nullptr;
         bool finished = false;  // Track if TShark has finished processing
         std::vector<std::string> selected_fields;
         std::vector<duckdb::LogicalType> field_types;
+    };
+
+    struct PcapGlobalState : GlobalTableFunctionState {
+        mutex lock;
+    
+        FILE *pipe = nullptr;
+    
+        vector<ColumnIndex> column_indexes;
+        optional_ptr<TableFilterSet> filters;
     };
       
 static duckdb::LogicalType MapTsharkTypeToDuckDB(const std::string &tshark_type) {
@@ -52,7 +60,7 @@ static duckdb::LogicalType MapTsharkTypeToDuckDB(const std::string &tshark_type)
 void FetchSelectedFields(ClientContext &context, const std::vector<std::string> &protocols,
         std::vector<std::string> &selected_fields, std::vector<duckdb::LogicalType> &field_types) {
     Connection conn(DatabaseInstance::GetDatabase(context));
-
+    
     std::stringstream sql;
     sql << "SELECT filter_name, field_type FROM glossary_fields WHERE protocol_filter_name IN (''";
     for (size_t i = 0; i < protocols.size(); i++) {
@@ -79,23 +87,6 @@ void FetchSelectedFields(ClientContext &context, const std::vector<std::string> 
 static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFunctionBindInput &input,
     vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<ReadPcapBindData>();
-    Connection conn(DatabaseInstance::GetDatabase(context));
-    // check glossary initialized
-    try {
-        auto result = conn.Query("SELECT 1 FROM glossary_protocols LIMIT 1");
-    } catch (...) {
-        throw BinderException("WireDuck glossary not initialized. Please run: CALL initialize_glossary();");
-    }
-
-    try {
-        auto result = conn.Query("SELECT 1 FROM glossary_fields LIMIT 1");
-    } catch (...) {
-        throw BinderException("WireDuck glossary not initialized. Please run: CALL initialize_glossary();");
-    }
-
-
-
-
     // Extract the file path argument
     auto &fs = FileSystem::GetFileSystem(context);
     string file_path = input.inputs[0].GetValue<string>();
@@ -107,8 +98,6 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
     }
 
     bind_data->file_path = file_handle->GetPath();  // Get actual local path if remote
-    std::string command;
-    
     std::vector<string> protocols;
     if  (input.inputs.size() > 1 && !input.inputs[1].IsNull()){
         // Extract the list of protocols argument
@@ -119,24 +108,43 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
     }
     // Fetch the selected fields and corresponding DuckDB types
     FetchSelectedFields(context, protocols, bind_data->selected_fields, bind_data->field_types);
-    // Construct return columns based on fetched fields, and tshark command
-    command = "tshark -r " + bind_data->file_path + " -T fields ";
-    for (size_t i = 0; i < bind_data->selected_fields.size(); i++) {
+     // Construct return columns based on fetched fields, and tshark command
+     for (size_t i = 0; i < bind_data->selected_fields.size(); i++) {
 
         names.push_back(bind_data->selected_fields[i]);
         return_types.push_back(bind_data->field_types[i]);
-        command.append (" -e " + bind_data->selected_fields[i] );
+    }
+    return std::move(bind_data);
+}
+
+
+unique_ptr<GlobalTableFunctionState> PcapGlobalInit(ClientContext &context, TableFunctionInitInput &input) {
+  
+	auto global_state_result = make_uniq<PcapGlobalState>();
+	auto &global_state = *global_state_result;
+    auto &bind_data = input.bind_data->CastNoConst<ReadPcapBindData>();
+	global_state.column_indexes = input.column_indexes;
+	global_state.filters = input.filters;
+    std::string command;
+    command = "tshark -r " + bind_data.file_path + " -T fields  ";
+    
+    //only fetch the columns in the Select 
+    for (size_t i = 0; i < global_state.column_indexes.size(); i++) {
+
+        command.append (" -e " + bind_data.selected_fields[global_state.column_indexes[i].GetPrimaryIndex()] );
     }
     
     // **Start TShark process in reading from stdin**
-    // std::cout<<command << std::endl;
-    bind_data->pipe = popen(command.c_str(), "r");  // Now open TShark for reading
-    if (!bind_data->pipe) {
+    std::cout<<command << std::endl;
+    global_state.pipe = popen(command.c_str(), "r");  // Now open TShark for reading
+    if (!global_state.pipe) {
         throw std::runtime_error("Failed to open TShark output.");
     }
-
-    return std::move(bind_data);
+	return global_state_result;
 }
+
+
+
 std::string Trim(const std::string &s) {
     auto start = s.find_first_not_of(" \t\r\n");
     auto end = s.find_last_not_of(" \t\r\n");
@@ -165,6 +173,7 @@ inline std::vector<std::string> ParseTsharkLine(char* buffer) {
 }
 static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
     auto &bind_data = data.bind_data->CastNoConst<ReadPcapBindData>();
+    auto &global_state = data.global_state->Cast<PcapGlobalState>();
     auto &fs = FileSystem::GetFileSystem(context);
     
     // If already finished, signal end of data
@@ -183,7 +192,7 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
     
 
     // Read from TShark process in chunks
-    while (fgets(buffer.data(), buffer.size(), bind_data.pipe) != nullptr) {
+    while (fgets(buffer.data(), buffer.size(), global_state.pipe) != nullptr) {
         if (row_idx >= max_rows) {
             break;
         }
@@ -196,22 +205,36 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
         while (std::getline(ss, field, '\t')) {
             row.push_back(Trim(field));
         }
-        if (row.size() < 5) continue;  // Skip malformed lines  , 5 is the minimum default feidls we add
-        // std::cout <<std::endl;
+        if (row.size() < 1) continue;  // Skip malformed lines  , 5 is the minimum default feidls we add
+        size_t curr_projected_index=0;
         // Store in DuckDB output
         for (size_t col_idx = 0; col_idx < bind_data.selected_fields.size(); col_idx++) {
             try {
-                std::string field_value = row[col_idx];  // Extract raw value
-                LogicalType field_type = bind_data.field_types[col_idx];  // Get expected type
+                std::string field_value;
+                std::cout <<0;
+                LogicalType field_type = bind_data.field_types[col_idx];      // Get expected type
                 std::string field_name = bind_data.selected_fields[col_idx];  // Get field name
-                // std::cout <<col_idx<<" "<< field_name <<":" << ":"<<field_value;
+                // check if thes fields was pushed doen to be fetched
+                if (global_state.column_indexes.size() <=curr_projected_index || col_idx != global_state.column_indexes[curr_projected_index].GetPrimaryIndex())
+                {
+                    std::cout <<1;
+                    continue;
+                }
+                else
+                { // its a projected field we need to get it 
+                    std::cout <<2;
+                    field_value = row[curr_projected_index];  // Extract raw value  
+                    curr_projected_index++;
+                }
                 if (field_value.empty()) {
                     //  If field is blank, set NULL instead of throwing an exception
+                    std::cout <<3;
                     output.SetValue(col_idx, row_idx, Value());
                     continue;
                 }
                 switch (bind_data.field_types[col_idx].id()) {
                     case LogicalTypeId::BIGINT:
+                        std::cout <<4;
                         output.SetValue(col_idx, row_idx, Value::BIGINT(std::stoll(row[col_idx])));
                         break;
                     case LogicalTypeId::DOUBLE:
@@ -221,9 +244,11 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
                         output.SetValue(col_idx, row_idx, Value::BOOLEAN(row[col_idx] == "1"));
                         break;
                     case LogicalTypeId::TIMESTAMP:
+                        std::cout <<5;
                         output.SetValue(col_idx, row_idx, Value::TIMESTAMP(Timestamp::FromEpochSeconds(std::stod(row[col_idx]))));
                         break;
                     default:
+                        std::cout <<6;
                         output.SetValue(col_idx, row_idx, Value(row[col_idx]));  // Default to TEXT
                         break;
                 }
@@ -231,13 +256,18 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
             catch (const std::exception &e) {
                 std::cerr << "⚠️ Error extracting field: "
                           << bind_data.selected_fields[col_idx]  // Field name
+                          << " | row_idx: " << row_idx  // row_idx  
                           << " | col_idx: " << col_idx  // Raw value
+                          << " | curr_projected_index: " << curr_projected_index  // Raw value
+                          << " | bind_data.field_types.size: " << bind_data.field_types.size()  // Raw value
+                          << " | global_state.column_indexes.size: " << global_state.column_indexes.size()  // Raw value
                           << " | Value: " << row[col_idx]  // Raw value
                           << " | Expected Type: " << bind_data.field_types[col_idx].ToString()  // Type
                           << " | Error: " << e.what()  // Error message
                           << std::endl;
 
                 output.SetValue(col_idx, row_idx, Value());  // Set NULL on error
+                col_idx++;
                 break;
             }
         }
@@ -248,8 +278,8 @@ static void ReadPcapFunction(ClientContext &context, TableFunctionInput &data, D
     if (row_idx == 0) {
         output.SetCardinality(0);
         bind_data.finished = true;
-        pclose(bind_data.pipe);
-        bind_data.pipe = nullptr;
+        pclose(global_state.pipe);
+        global_state.pipe = nullptr;
     } else {
         output.SetCardinality(row_idx);
     }
@@ -359,7 +389,6 @@ static void InitializeGlossaryProtocols(Connection &conn) {
 	}
 
 	char buffer[1024];
-    conn.Query("BEGIN TRANSACTION");
 	while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
 		std::stringstream ss(buffer);
 		std::string full_name, short_name, filter_name, can_enable, is_displayed, is_filterable;
@@ -406,7 +435,6 @@ static void InitializeGlossaryProtocols(Connection &conn) {
 
 		conn.Query(query);
 	}
-    conn.Query("COMMIT");
 	pclose(pipe);
 }
 
@@ -528,10 +556,13 @@ static void LoadInternal(DatabaseInstance &instance) {
 
     // function with selected protocol
     auto read_pcap_default = TableFunction("read_pcap",
-        {LogicalType::VARCHAR },  ReadPcapFunction,ReadPcapBind);
+        {LogicalType::VARCHAR },  ReadPcapFunction,ReadPcapBind,PcapGlobalInit);
+        read_pcap_default.projection_pushdown=true;
+        read_pcap_default.filter_pushdown=true;
+
 
     auto read_pcap_selected = TableFunction("read_pcap",
-        {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)},  ReadPcapFunction,ReadPcapBind);
+        {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)},  ReadPcapFunction,ReadPcapBind,PcapGlobalInit);
     
     ExtensionUtil::RegisterFunction(instance, read_pcap_default);
     ExtensionUtil::RegisterFunction(instance, read_pcap_selected);
@@ -545,8 +576,24 @@ void WireduckExtension::Load(DuckDB &db) {
         throw InvalidInputException("[WireDuck] ERROR: TShark is not installed or not accesible. Please install TShark before using this extension.");
        
     }
-
     std::cout << "[WireDuck] TShark detected. Loading extension..." << std::endl;
+
+    auto &catalog = Catalog::GetSystemCatalog(*db.instance);
+    Connection conn(*db.instance);
+
+    // Check if glossary tables exist
+    auto protocol_check = conn.Query("SELECT name FROM sqlite_master WHERE type='table' AND name='glossary_protocols'");
+    auto field_check = conn.Query("SELECT name FROM sqlite_master WHERE type='table' AND name='glossary_fields'");
+
+    if (protocol_check->RowCount() == 0 || field_check->RowCount() == 0) {
+        std::cerr << "[WireDuck] initializing glossary tables, may take a few minutes .." << std::endl;
+        InitializeGlossaryProtocols(conn);
+        InitializeGlossaryFields(conn);
+        std::cerr << "[WireDuck] glossary initialized." << std::endl;
+    } else {
+        std::cerr << "[WireDuck] glossary already initialized." << std::endl;
+    }
+   
 	LoadInternal(*db.instance);
     
 }
