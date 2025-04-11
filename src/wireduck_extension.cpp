@@ -92,10 +92,13 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
 
     bind_data->file_path = file_handle->GetPath();  // Get actual local path if remote
     std::vector<string> protocols;
-    if  (input.inputs.size() > 1 && !input.inputs[1].IsNull()){
+    // Get named parameters with default fallback
+        
+    if (input.named_parameters.count("protocols")) {
         // Extract the list of protocols argument
-        const auto &list_val = ListValue::GetChildren(input.inputs[1]);  //Extract list elements
-        for (const auto &val : list_val) {
+        const auto &list_val = input.named_parameters["protocols"];
+        const auto &list = duckdb::ListValue::GetChildren(list_val);
+        for (const auto &val : list) {
             protocols.push_back(val.ToString());  // Convert each element to string
         }
     }
@@ -109,6 +112,16 @@ static unique_ptr<FunctionData> ReadPcapBind(ClientContext &context, TableFuncti
         names.push_back(bind_data->selected_fields[i]);
         return_types.push_back(bind_data->field_types[i]);
         command.append (" -e " + bind_data->selected_fields[i] );
+    }
+
+    if (input.named_parameters.count("climit")) {
+        auto limit = input.named_parameters["climit"].GetValue<int64_t>();
+        command.append( " -c " + std::to_string (limit) );
+    }
+
+    if (input.named_parameters.count("cfilter")) {
+        auto filter = input.named_parameters["cfilter"].GetValue<string>();
+        command.append( " -Y " +filter );
     }
     bind_data->pipe = popen(command.c_str(), "r");  // Now open TShark for reading
     if (!bind_data->pipe) {
@@ -247,70 +260,7 @@ static void CheckTsharkFunction(DataChunk &input, ExpressionState &state, Vector
     result.SetValue(0, Value::BOOLEAN(CheckTSharkAvailable()));
 }
 
-// **Function to Populate Tables Using TShark**
-static void PopulateGlossary(Connection &conn) {
-    std::cout << "[WireDuck] Populating glossary tables from TShark (this may take a minute for two)..." << std::endl;
-
-    FILE *pipe;
-
-    // **Insert Protocols**
-    pipe = popen("tshark -G protocols", "r");
-    if (pipe) {
-        char buffer[1024];
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            std::stringstream ss(buffer);
-            std::string id, protocol_name, description;
-            std::getline(ss, id, '\t');
-            std::getline(ss, protocol_name, '\t');
-            std::getline(ss, description, '\t');
-
-            conn.Query("INSERT INTO glossary_protocols VALUES (" + id + ", '" + protocol_name + "', '" + description + "')");
-        }
-        pclose(pipe);
-    }
-
-    // **Insert Fields**
-    pipe = popen("tshark -G fields", "r");
-    if (pipe) {
-        char buffer[1024];
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            std::stringstream ss(buffer);
-            std::string id, protocol, field_name, field_type, display, filterable, description;
-            std::getline(ss, id, '\t');
-            std::getline(ss, protocol, '\t');
-            std::getline(ss, field_name, '\t');
-            std::getline(ss, field_type, '\t');
-            std::getline(ss, display, '\t');
-            std::getline(ss, filterable, '\t');
-            std::getline(ss, description, '\t');
-
-            conn.Query("INSERT INTO glossary_fields VALUES (" + id + ", '" + protocol + "', '" + field_name + "', '" + field_type + "', " + (display == "T" ? "TRUE" : "FALSE") + ", " + (filterable == "T" ? "TRUE" : "FALSE") + ", '" + description + "')");
-        }
-        pclose(pipe);
-    }
-
-    // **Insert Values**
-    pipe = popen("tshark -G values", "r");
-    if (pipe) {
-        char buffer[1024];
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            std::stringstream ss(buffer);
-            std::string id, field_name, value, meaning;
-            std::getline(ss, id, '\t');
-            std::getline(ss, field_name, '\t');
-            std::getline(ss, value, '\t');
-            std::getline(ss, meaning, '\t');
-
-            conn.Query("INSERT INTO glossary_values VALUES (" + id + ", '" + field_name + "', '" + value + "', '" + meaning + "')");
-        }
-        pclose(pipe);
-    }
-
-    std::cout << "[WireDuck] Glossary tables populated." << std::endl;
-}
-
 // **Procedure to Initialize the WireDuck Glossary**
-
 static unique_ptr<FunctionData> InitializeGlossaryBind(ClientContext &context, TableFunctionBindInput &input,
                                                        vector<LogicalType> &return_types, vector<string> &names) {
 
@@ -328,7 +278,7 @@ static void InitializeGlossaryProtocols(Connection &conn) {
 	conn.Query("CREATE TABLE IF NOT EXISTS glossary_protocols ("
 	           "full_name TEXT NOT NULL, "
 	           "short_name TEXT, "
-	           "filter_name TEXT NOT NULL UNIQUE, "
+	           "filter_name TEXT NOT NULL , "
 	           "can_enable BOOLEAN NOT NULL, "
 	           "is_displayed BOOLEAN NOT NULL, "
 	           "is_filterable BOOLEAN NOT NULL);");
@@ -339,8 +289,11 @@ static void InitializeGlossaryProtocols(Connection &conn) {
 	if (!pipe) {
 		throw std::runtime_error("[WireDuck] ERROR: Failed to execute 'tshark -G protocols'");
 	}
+    constexpr idx_t CHUNK_SIZE = 1024;
+    // Prepare the appender
+    Appender appender(conn, "glossary_protocols");
+    char buffer[1024];
 
-	char buffer[1024];
 	while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
 		std::stringstream ss(buffer);
 		std::string full_name, short_name, filter_name, can_enable, is_displayed, is_filterable;
@@ -372,21 +325,18 @@ static void InitializeGlossaryProtocols(Connection &conn) {
 		};
 		escape_quotes(full_name);
 		escape_quotes(short_name);
-
-		// Convert 'T'/'F' to Boolean (1/0)
-		std::string can_enable_bool = (can_enable == "T") ? "1" : "0";
-		std::string is_displayed_bool = (is_displayed == "T") ? "1" : "0";
-		std::string is_filterable_bool = (is_filterable == "T") ? "1" : "0";
-
-		// Construct and execute the SQL query
-		std::string query = "INSERT INTO glossary_protocols (full_name, short_name, filter_name, can_enable, "
-		                    "is_displayed, is_filterable) "
-		                    "VALUES ('" +
-		                    full_name + "', '" + short_name + "', '" + filter_name + "', " + can_enable_bool + ", " +
-		                    is_displayed_bool + ", " + is_filterable_bool + ")";
-
-		conn.Query(query);
+		
+        // Append row to buffer
+        appender.BeginRow();
+        appender.Append(full_name.c_str());
+        appender.Append(short_name.c_str());
+        appender.Append(filter_name.c_str());
+        appender.Append(can_enable == "T");
+        appender.Append(is_displayed == "T");
+        appender.Append(is_filterable == "T");
+        appender.EndRow();
 	}
+    appender.Close();
 	pclose(pipe);
 }
 
@@ -394,7 +344,7 @@ static void InitializeGlossaryFields(Connection &conn) {
 	// **Create the glossary_fields table**
 	conn.Query("BEGIN TRANSACTION");
 	conn.Query("CREATE TABLE IF NOT EXISTS glossary_fields ("
-	           "field_name TEXT NOT NULL UNIQUE, "
+	           "field_name TEXT NOT NULL , "
 	           "filter_name TEXT NOT NULL UNIQUE, "
 	           "field_type TEXT NOT NULL, "
 	           "protocol_filter_name TEXT NOT NULL, "
@@ -408,7 +358,7 @@ static void InitializeGlossaryFields(Connection &conn) {
 	if (!pipe) {
 		throw std::runtime_error("[WireDuck] ERROR: Failed to execute 'tshark -G fields'");
 	}
-
+    Appender appender(conn, "glossary_fields");
 	char buffer[2048];
 	while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
 		std::stringstream ss(buffer);
@@ -460,16 +410,20 @@ static void InitializeGlossaryFields(Connection &conn) {
 		escape_quotes(protocol_filter_name);
 		escape_quotes(description);
 
-		// Construct and execute the SQL query
-		std::string query = "INSERT INTO glossary_fields (field_name, filter_name, field_type, protocol_filter_name, "
-		                    "encoding, bitmask, description) "
-		                    "VALUES ('" +
-		                    field_name + "', '" + filter_name + "', '" + field_type + "', '" + protocol_filter_name +
-		                    "', '" + encoding + "', '" + bitmask + "', '" + description + "')";
+		  // Append row to buffer
+        appender.BeginRow();
+        appender.Append(field_name.c_str());
+        appender.Append(filter_name.c_str());
+        appender.Append(field_type.c_str());
 
-		conn.Query(query);
+        appender.Append(protocol_filter_name.c_str());
+        appender.Append(encoding.c_str());
+        appender.Append(bitmask.c_str());
+        appender.Append(description.c_str());
+        appender.EndRow();
+	
 	}
-
+    appender.Close();
 	pclose(pipe);
 }
 
@@ -506,15 +460,13 @@ static void LoadInternal(DatabaseInstance &instance) {
     );
     ExtensionUtil::RegisterFunction(instance, check_tshark_func);
 
-    // function with selected protocol
-    auto read_pcap_default = TableFunction("read_pcap",
-        {LogicalType::VARCHAR },  ReadPcapFunction,ReadPcapBind);
-
 
     auto read_pcap_selected = TableFunction("read_pcap",
-        {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)},  ReadPcapFunction,ReadPcapBind);
-    
-    ExtensionUtil::RegisterFunction(instance, read_pcap_default);
+        {LogicalType::VARCHAR, },  ReadPcapFunction,ReadPcapBind);
+        read_pcap_selected.named_parameters["protocols"] =LogicalType::LIST(LogicalType::VARCHAR);
+        read_pcap_selected.named_parameters["climit"] = LogicalType::BIGINT;
+        read_pcap_selected.named_parameters["cfilter"] = LogicalType::VARCHAR;
+
     ExtensionUtil::RegisterFunction(instance, read_pcap_selected);
     
     auto initialize_glossary =TableFunction ("initialize_glossary", {}, InitializeGlossaryProcedure, InitializeGlossaryBind);
