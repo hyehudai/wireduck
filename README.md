@@ -34,7 +34,8 @@ INSTALL wireduck FROM community
 LOAD wireduck
 ```
 
-
+## Roadmap
+The roadmap for the next version is maintained as a discussion. you can find it [here](https://github.com/hyehudai/wireduck/discussions/1)
 
 ## Examples
 
