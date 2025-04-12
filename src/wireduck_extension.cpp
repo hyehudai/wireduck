@@ -475,7 +475,10 @@ static void LoadInternal(DatabaseInstance &instance) {
 }
 void WireduckExtension::Load(DuckDB &db) {
     if (!CheckTSharkAvailable()) {
-        throw InvalidInputException("[WireDuck] ERROR: TShark is not installed or not accesible. Please install TShark before using this extension.");
+        std::cerr << "[WireDuck] ERROR: TShark is not installed or not accesible."<< std::endl;
+        std::cerr << "[WireDuck] Please install TShark before using this extension."<< std::endl;
+        std::cerr << "[WireDuck] Check Tshark availability using select check_tshark_installed(); ."<< std::endl;
+        return;
        
     }
     std::cout << "[WireDuck] TShark detected. Loading extension..." << std::endl;
