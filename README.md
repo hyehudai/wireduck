@@ -11,11 +11,11 @@ This repository is based on https://github.com/duckdb/extension-template, check 
 ## What is this tool good for ?
 This extension, Wireduck, allow reading PCAP files using duckdb.
 
-[Wireshark](https://www.wireshark.org/) is the leading open source tool for network traffic analysis, [tshark](https://www.wireshark.org/docs/man-pages/tshark.html), Wireshark's CLI, allows filterting and fetching netework data.
-Howerver, when analytics, aggregation, joining and other data wrangleing tasks are in order things gets a little more complex. This is where this extension can help by harnessing the argonomity of duckdb and SQL.
+[Wireshark](https://www.wireshark.org/) is the leading open source tool for network traffic analysis, [tshark](https://www.wireshark.org/docs/man-pages/tshark.html), Wireshark's CLI, allows filterting and fetching network data.
+However, when analytics, aggregation, joining and other data wrangleing tasks are in order things gets a little more complex. This is where this extension can help by harnessing the argonomity of duckdb and SQL.
 
-In addiiton, while duckdb supports leading data format (parquet ,json, delta, etc) wireshark supports over 3000 protocols. from IoT to Telcom to financial protocols.
-So any new dissector developed for wireshark immediatly enables analytics over the data.
+In addition, while duckdb supports leading data format (parquet ,json, delta, etc) wireshark supports over 3000 protocols. from IoT to Telcom to financial protocols.
+So any new dissector developed for wireshark immediately enables analytics over the data.
 
 ## How wireduck works ?
 Wireduck runs tshark behind the scenes utilizing wireshark's glossary to be able to parse any packet from any supported protocol to its fields. 
